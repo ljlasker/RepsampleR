@@ -1,0 +1,21 @@
+Package: RepsampleR
+Type: Package
+Title: Fast Representative Sampling in R
+Version: 0.1.0
+Authors@R: person(given = "Jay", family = "Lasker", role = c("aut", "cre"), email = "ljlasker@users.noreply.github.com")
+Description: High-performance greedy representative sampling for population
+    and theoretical targets, including retain/force behavior, variable
+    weighting, early stopping, and exact or asymptotic testing modes.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+    Rcpp,
+    stats
+LinkingTo:
+    Rcpp
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
