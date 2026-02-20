@@ -212,6 +212,9 @@ build_refine_seed_set <- function(top_seeds,
 #'   `"multicore"`, or `"psock"`.
 #' @param method Sampling method:
 #'   `"auto"` (default), `"greedy"`, `"importance"`, or `"nearest"`.
+#' @param nearest_replace Logical flag used when `method = "nearest"`:
+#'   `FALSE` (default) matches without replacement; `TRUE` allows replacement
+#'   (duplicate draws are recorded in `best$data$repsample_n`).
 #' @param objective Optional custom objective function that takes a
 #'   `repsample_result` and returns a scalar loss (smaller is better).
 #' @param keep_all If `TRUE`, return all per-seed fit objects.
@@ -239,11 +242,13 @@ repsample_search <- function(data,
                              n_outer_workers = 1,
                              outer_parallel = c("auto", "serial", "multicore", "psock"),
                              method = c("auto", "greedy", "importance", "nearest"),
+                             nearest_replace = FALSE,
                              objective = NULL,
                              keep_all = FALSE,
                              ...) {
   outer_parallel <- match.arg(outer_parallel)
   method <- match.arg(method)
+  check_scalar_flag(nearest_replace, "nearest_replace")
 
   n_seeds <- check_positive_int_scalar(n_seeds, "n_seeds")
 
@@ -365,7 +370,8 @@ repsample_search <- function(data,
       n_outer_workers = n_outer_workers,
       outer_mode = mode,
       keep_all = keep_all,
-      objective = objective
+      objective = objective,
+      replace = nearest_replace
     )
     if (!is.null(out_nn)) {
       return(out_nn)

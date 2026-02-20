@@ -25,7 +25,7 @@
 - simplified front-end: `repsample_easy()`
 - optional method dispatch: `method = "auto" | "greedy" | "importance"`
 - nearest-neighbor theoretical matching path with multivariate continuous support:
-  `method = "nearest"`
+  `method = "nearest"` with `nearest_replace = FALSE/TRUE`
 
 ## Install from GitHub (public)
 
@@ -75,6 +75,7 @@ out <- repsample_easy(
   dist = "normal",      # normal | lognormal | poisson
   quality = "balanced", # fast | balanced | strict | manual
   method = "auto",      # auto | greedy | importance | nearest
+  nearest_replace = FALSE,
   mode = "single",
   seed = 7
 )
@@ -92,6 +93,7 @@ search <- repsample_search(
   mean = 1,
   sd = 1,
   method = "auto",      # auto | greedy | importance | nearest
+  nearest_replace = FALSE,
   n_seeds = 24,
   seed_start = 1001,
   n_outer_workers = max(1L, parallel::detectCores(logical = FALSE) - 1L),
@@ -138,6 +140,10 @@ default to avoid oversubscribing a single GPU.
 
 For theoretical continuous targets (`cont` only, no `bincat`, `exact = FALSE`),
 `method = "auto"` can dispatch to an importance-sampling fast path.
+
+When `method = "nearest"` and `nearest_replace = TRUE`, duplicate draws are
+tracked in `out$data$repsample_n` (counts per row), and draw order is preserved
+in `out$selected_rows`.
 
 ## Speed notes
 

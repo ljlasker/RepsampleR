@@ -50,11 +50,12 @@
   stop(sprintf("Unsupported distribution `%s`.", dist), call. = FALSE)
 }
 
-.nearest_prepare <- function(data, size, cont, mean, sd, dist) {
+.nearest_prepare <- function(data, size, cont, mean, sd, dist, replace = FALSE) {
   cont_norm <- normalize_varlist(cont)
   mean_norm <- normalize_numlist(mean)
   sd_norm <- normalize_numlist(sd)
   dist_norm <- if (is.null(dist)) rep.int("normal", length(cont_norm)) else normalize_cont_dist(dist, cont_norm)
+  check_scalar_flag(replace, "nearest_replace")
 
   if (length(cont_norm) < 1L) {
     stop("Nearest-neighbor sampling requires at least one continuous variable.", call. = FALSE)
@@ -65,7 +66,7 @@
 
   keep <- stats::complete.cases(data[, cont_norm, drop = FALSE])
   pool_idx <- which(keep)
-  if (length(pool_idx) < size) {
+  if (!isTRUE(replace) && length(pool_idx) < size) {
     stop("Not enough complete cases for the requested sample size.", call. = FALSE)
   }
 
@@ -85,13 +86,29 @@
     mean = mean_norm,
     sd = sd_norm,
     dist = dist_norm,
-    scale = scale_vec
+    scale = scale_vec,
+    replace = isTRUE(replace)
   )
 }
 
-.nearest_match_indices <- function(x_scaled, target_scaled) {
+.nearest_match_indices <- function(x_scaled, target_scaled, replace = FALSE) {
+  check_scalar_flag(replace, "nearest_replace")
   n_pool <- nrow(x_scaled)
   n_take <- nrow(target_scaled)
+  if (!isTRUE(replace) && n_take > n_pool) {
+    stop("`size` cannot exceed available rows when `nearest_replace = FALSE`.", call. = FALSE)
+  }
+
+  if (isTRUE(replace)) {
+    selected <- integer(n_take)
+    for (i in seq_len(n_take)) {
+      t_row <- target_scaled[i, ]
+      d <- rowSums((x_scaled - matrix(t_row, nrow = n_pool, ncol = ncol(x_scaled), byrow = TRUE)) ^ 2)
+      selected[i] <- which.min(d)
+    }
+    return(selected)
+  }
+
   available <- seq_len(n_pool)
   selected <- integer(n_take)
 
@@ -107,7 +124,8 @@
   selected
 }
 
-.nearest_eval_seed <- function(data, size, seed, prep, objective = NULL) {
+.nearest_eval_seed <- function(data, size, seed, prep, objective = NULL, replace = FALSE) {
+  check_scalar_flag(replace, "nearest_replace")
   p <- length(prep$cont)
 
   target_mat <- matrix(0, nrow = size, ncol = p)
@@ -121,21 +139,24 @@
   }
   target_scaled <- sweep(target_mat, 2L, prep$scale, "/", check.margin = FALSE)
 
-  pick_local <- .nearest_match_indices(prep$x_scaled, target_scaled)
+  pick_local <- .nearest_match_indices(prep$x_scaled, target_scaled, replace = replace)
   selected_rows <- prep$pool_idx[pick_local]
   chosen <- data[selected_rows, , drop = FALSE]
 
   ks <- .importance_ks_score(chosen, prep$cont, prep$mean, prep$sd, prep$dist)
 
   out <- data
-  out$repsample <- 0L
-  out$repsample[selected_rows] <- 1L
+  draw_counts <- tabulate(selected_rows, nbins = nrow(data))
+  out$repsample <- as.integer(draw_counts > 0L)
+  if (isTRUE(replace)) {
+    out$repsample_n <- as.integer(draw_counts)
+  }
 
   fit <- structure(
     list(
       data = out,
       r = numeric(0),
-      selected_rows = which(out$repsample == 1L),
+      selected_rows = as.integer(selected_rows),
       meta = list(
         size = size,
         mode = "theoretical",
@@ -156,7 +177,9 @@
         weighted = FALSE,
         retain = NULL,
         method = "nearest_neighbor",
-        ks = as.numeric(ks)
+        ks = as.numeric(ks),
+        nearest_replace = isTRUE(replace),
+        selected_unique = as.integer(sum(draw_counts > 0L))
       )
     ),
     class = "repsample_result"
@@ -172,17 +195,22 @@
                                 mean,
                                 sd,
                                 dist = NULL,
-                                seed = 7L) {
+                                seed = 7L,
+                                replace = FALSE) {
   prep <- .nearest_prepare(
     data = data,
     size = size,
     cont = cont,
     mean = mean,
     sd = sd,
-    dist = dist
+    dist = dist,
+    replace = replace
   )
 
-  .importance_with_seed(seed, .nearest_eval_seed(data, size, seed, prep, objective = NULL)$fit)
+  .importance_with_seed(
+    seed,
+    .nearest_eval_seed(data, size, seed, prep, objective = NULL, replace = replace)$fit
+  )
 }
 
 .nearest_sample_search <- function(data,
@@ -195,8 +223,10 @@
                                    n_outer_workers = 1L,
                                    outer_mode = c("auto", "serial", "multicore", "psock"),
                                    keep_all = FALSE,
-                                   objective = NULL) {
+                                   objective = NULL,
+                                   replace = FALSE) {
   outer_mode <- match.arg(outer_mode)
+  check_scalar_flag(replace, "nearest_replace")
   if (length(seeds) < 1L) {
     stop("`seeds` must be non-empty.", call. = FALSE)
   }
@@ -207,11 +237,22 @@
     cont = cont,
     mean = mean,
     sd = sd,
-    dist = dist
+    dist = dist,
+    replace = replace
   )
 
   eval_seed <- function(seed) {
-    .importance_with_seed(seed, .nearest_eval_seed(data, size, seed, prep, objective = objective))
+    .importance_with_seed(
+      seed,
+      .nearest_eval_seed(
+        data,
+        size,
+        seed,
+        prep,
+        objective = objective,
+        replace = replace
+      )
+    )
   }
 
   results <- NULL
@@ -263,7 +304,8 @@
         outer_mode = outer_mode,
         backend = "nearest_neighbor",
         theoretical = TRUE,
-        method = "nearest_neighbor"
+        method = "nearest_neighbor",
+        nearest_replace = isTRUE(replace)
       )
     ),
     class = "repsample_search_result"

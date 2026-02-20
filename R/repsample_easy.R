@@ -23,6 +23,9 @@
 #' @param backend Compute backend (`"cpu"` or `"cuda"`).
 #' @param method Sampling method:
 #'   `"auto"` (default), `"greedy"`, `"importance"`, or `"nearest"`.
+#' @param nearest_replace Logical flag used when `method = "nearest"`:
+#'   `FALSE` (default) matches without replacement; `TRUE` allows replacement
+#'   (duplicate draws are recorded in `data$repsample_n`).
 #' @param ... Additional arguments forwarded to `repsample()` (for `"single"`)
 #'   or to `repsample_search()` (for `"search"`), such as `rrule`, `srule`,
 #'   `randomperc`, `objective`, etc.
@@ -46,11 +49,13 @@ repsample_easy <- function(data,
                            n_cores = 1,
                            backend = c("cpu", "cuda"),
                            method = c("auto", "greedy", "importance", "nearest"),
+                           nearest_replace = FALSE,
                            ...) {
   quality <- match.arg(quality)
   mode <- match.arg(mode)
   backend <- match.arg(backend)
   method <- match.arg(method)
+  check_scalar_flag(nearest_replace, "nearest_replace")
 
   extra_args <- list(...)
   exact_arg <- if ("exact" %in% names(extra_args)) isTRUE(extra_args$exact) else FALSE
@@ -120,7 +125,8 @@ repsample_easy <- function(data,
         mean = mean,
         sd = sd,
         dist = dist,
-        seed = seed
+        seed = seed,
+        replace = nearest_replace
       ))
     }
 
@@ -156,7 +162,8 @@ repsample_easy <- function(data,
       n_seeds = n_seeds,
       seed_start = seed_start,
       n_outer_workers = n_outer_workers,
-      method = method
+      method = method,
+      nearest_replace = nearest_replace
     )
   )
   do.call(repsample_search, search_args)

@@ -18,6 +18,7 @@ repsample_easy(
   n_cores = 1,
   backend = c("cpu", "cuda"),
   method = c("auto", "greedy", "importance", "nearest"),
+  nearest_replace = FALSE,
   ...
 )
 }
@@ -55,6 +56,10 @@ search with \code{repsample_search()}.}
 
 \item{method}{Sampling method:
 \code{"auto"} (default), \code{"greedy"}, \code{"importance"}, or \code{"nearest"}.}
+
+\item{nearest_replace}{Logical flag used when \code{method = "nearest"}:
+\code{FALSE} (default) matches without replacement; \code{TRUE} allows replacement
+(duplicate draws are recorded in \code{data$repsample_n}).}
 
 \item{...}{Additional arguments forwarded to \code{repsample()} (for \code{"single"})
 or to \code{repsample_search()} (for \code{"search"}), such as \code{rrule},

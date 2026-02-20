@@ -16,6 +16,7 @@ repsample_search(
   n_outer_workers = 1,
   outer_parallel = c("auto", "serial", "multicore", "psock"),
   method = c("auto", "greedy", "importance", "nearest"),
+  nearest_replace = FALSE,
   objective = NULL,
   keep_all = FALSE,
   ...
@@ -49,6 +50,10 @@ repsample_search(
 
 \item{method}{Sampling method:
 \code{"auto"} (default), \code{"greedy"}, \code{"importance"}, or \code{"nearest"}.}
+
+\item{nearest_replace}{Logical flag used when \code{method = "nearest"}:
+\code{FALSE} (default) matches without replacement; \code{TRUE} allows replacement
+(duplicate draws are recorded in \code{best$data$repsample_n}).}
 
 \item{objective}{Optional custom objective function that takes a
 \code{repsample_result} and returns a scalar loss (smaller is better).}
