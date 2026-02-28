@@ -446,6 +446,8 @@ cuda_ks1_batch <- local({
 #'   `"cuda"` enables an additional CUDA fast-path for theoretical sampling
 #'   with continuous variables and `exact = FALSE` (uses Python `cupy`
 #'   through `reticulate`).
+#' @param cuda_fallback If `TRUE` (default), automatically falls back to CPU
+#'   when CUDA dependencies are unavailable or a CUDA fast-path cannot be used.
 #'
 #' @return An object of class `repsample_result` with:
 #' - `data`: input data plus `repsample` (`0/1`)
@@ -474,7 +476,8 @@ repsample <- function(data,
                       subset = NULL,
                       in_rows = NULL,
                       n_cores = 1,
-                      backend = c("cpu", "cuda")) {
+                      backend = c("cpu", "cuda"),
+                      cuda_fallback = TRUE) {
   if (!is.data.frame(data)) {
     stop("`data` must be a data.frame.", call. = FALSE)
   }
@@ -516,6 +519,8 @@ repsample <- function(data,
 
   backend <- match.arg(backend)
   cuda_requested <- identical(backend, "cuda")
+  requested_backend <- backend
+  check_scalar_flag(cuda_fallback, "cuda_fallback")
 
   if (!is.numeric(n_cores) || length(n_cores) != 1L || is.na(n_cores) ||
       n_cores < 1 || abs(n_cores - round(n_cores)) > 0) {
@@ -555,15 +560,26 @@ repsample <- function(data,
   psock_parallel_threshold <- max(5000L, n_cores * 1024L)
 
   if (cuda_requested && !cuda_backend_available()) {
-    stop(
+    if (!isTRUE(cuda_fallback)) {
+      stop(
+        paste0(
+          "CUDA backend requires `reticulate`, Python `cupy`, and a visible CUDA GPU. ",
+          "On Windows, also ensure CUDA DLL search paths are registered and install ",
+          "`nvidia-cuda-nvrtc-cu12`, `nvidia-cuda-runtime-cu12`, and `nvidia-cublas-cu12`. ",
+          "Install dependencies on the target machine or use `backend = \"cpu\"`."
+        ),
+        call. = FALSE
+      )
+    }
+    warning(
       paste0(
-        "CUDA backend requires `reticulate`, Python `cupy`, and a visible CUDA GPU. ",
-        "On Windows, also ensure CUDA DLL search paths are registered and install ",
-        "`nvidia-cuda-nvrtc-cu12`, `nvidia-cuda-runtime-cu12`, and `nvidia-cublas-cu12`. ",
-        "Install dependencies on the target machine or use `backend = \"cpu\"`."
+        "CUDA backend requested but unavailable; falling back to CPU. ",
+        "Set `cuda_fallback = FALSE` to error instead."
       ),
       call. = FALSE
     )
+    backend <- "cpu"
+    cuda_requested <- FALSE
   }
 
   if (!is.null(srule)) {
@@ -1735,8 +1751,14 @@ repsample <- function(data,
         parallel_mode = parallel_mode,
         psock_stateful_fastpath = psock_stateful_fastpath,
         backend = backend,
+        requested_backend = requested_backend,
         cuda_fastpath = cuda_fastpath,
         quality = quality,
+        cont_vars = cont,
+        bincat_vars = bincat,
+        target_mean = if (theoretical) as.numeric(mean) else numeric(0),
+        target_sd = if (theoretical) as.numeric(sd) else numeric(0),
+        target_perc = if (theoretical) as.numeric(perc) else numeric(0),
         cont_dist = if (ccnt > 0L) stats::setNames(as.character(cont_dist), cont) else character(0),
         exact = exact,
         weighted = weights_provided,
@@ -1757,6 +1779,11 @@ print.repsample_result <- function(x, ...) {
   cat("repsample_result\n")
   cat(sprintf("  Mode: %s\n", x$meta$mode))
   cat(sprintf("  Backend: %s\n", x$meta$backend))
+  if (!is.null(x$meta$requested_backend) &&
+      is.character(x$meta$requested_backend) &&
+      x$meta$requested_backend != x$meta$backend) {
+    cat(sprintf("  Requested backend: %s\n", x$meta$requested_backend))
+  }
   if (isTRUE(x$meta$parallel_enabled)) {
     cat(sprintf("  Parallel: %s (%d cores)\n", x$meta$parallel_mode, x$meta$n_cores))
   }

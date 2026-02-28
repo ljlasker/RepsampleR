@@ -215,6 +215,31 @@ build_refine_seed_set <- function(top_seeds,
 #' @param nearest_replace Logical flag used when `method = "nearest"`:
 #'   `FALSE` (default) matches without replacement; `TRUE` allows replacement
 #'   (duplicate draws are recorded in `best$data$repsample_n`).
+#' @param nearest_distance Distance metric for `method = "nearest"`:
+#'   `"euclidean"` (default), `"mahalanobis"`, or `"weighted"`.
+#' @param nearest_backend Nearest-neighbor search backend:
+#'   `"auto"` (default), `"exact"`, or `"hnsw"` (requires optional
+#'   package `RcppHNSW`).
+#' @param nearest_match Nearest-neighbor assignment mode:
+#'   `"greedy"` (default) or `"optimal"` (global assignment; requires
+#'   optional package `clue`).
+#' @param nearest_feature_weights Optional positive weights for
+#'   `nearest_distance = "weighted"` (length 1 or length `cont`).
+#' @param nearest_caliper Optional positive caliper(s) on standardized
+#'   per-variable absolute distances for `method = "nearest"`.
+#' @param nearest_caliper_strict If `TRUE`, error when no candidate satisfies
+#'   the caliper for a draw; otherwise fallback to nearest candidate.
+#' @param nearest_optimal_max_size Maximum allowed `size` for
+#'   `nearest_match = "optimal"` before automatically falling back to greedy.
+#' @param nearest_hnsw_k Candidate count queried per draw when using HNSW.
+#' @param nearest_hnsw_M HNSW graph degree parameter.
+#' @param nearest_hnsw_ef_construction HNSW build-time search width.
+#' @param nearest_hnsw_ef_search HNSW query-time search width.
+#' @param mean_tol Optional tolerance on absolute mean error for early stop.
+#' @param sd_tol Optional tolerance on absolute SD error for early stop.
+#' @param ks_tol Optional tolerance on KS statistic for early stop.
+#' @param perc_tol Optional tolerance on absolute percentage-point error for
+#'   binary targets in theoretical mode.
 #' @param objective Optional custom objective function that takes a
 #'   `repsample_result` and returns a scalar loss (smaller is better).
 #' @param keep_all If `TRUE`, return all per-seed fit objects.
@@ -243,12 +268,31 @@ repsample_search <- function(data,
                              outer_parallel = c("auto", "serial", "multicore", "psock"),
                              method = c("auto", "greedy", "importance", "nearest"),
                              nearest_replace = FALSE,
+                             nearest_distance = c("euclidean", "mahalanobis", "weighted"),
+                             nearest_backend = c("auto", "exact", "hnsw"),
+                             nearest_match = c("greedy", "optimal"),
+                             nearest_feature_weights = NULL,
+                             nearest_caliper = NULL,
+                             nearest_caliper_strict = FALSE,
+                             nearest_optimal_max_size = 2000L,
+                             nearest_hnsw_k = 64L,
+                             nearest_hnsw_M = 16L,
+                             nearest_hnsw_ef_construction = 200L,
+                             nearest_hnsw_ef_search = 64L,
+                             mean_tol = NULL,
+                             sd_tol = NULL,
+                             ks_tol = NULL,
+                             perc_tol = NULL,
                              objective = NULL,
                              keep_all = FALSE,
                              ...) {
   outer_parallel <- match.arg(outer_parallel)
   method <- match.arg(method)
+  nearest_distance <- match.arg(nearest_distance)
+  nearest_backend <- match.arg(nearest_backend)
+  nearest_match <- match.arg(nearest_match)
   check_scalar_flag(nearest_replace, "nearest_replace")
+  check_scalar_flag(nearest_caliper_strict, "nearest_caliper_strict")
 
   n_seeds <- check_positive_int_scalar(n_seeds, "n_seeds")
 
@@ -371,7 +415,22 @@ repsample_search <- function(data,
       outer_mode = mode,
       keep_all = keep_all,
       objective = objective,
-      replace = nearest_replace
+      replace = nearest_replace,
+      distance = nearest_distance,
+      backend = nearest_backend,
+      match = nearest_match,
+      feature_weights = nearest_feature_weights,
+      caliper = nearest_caliper,
+      caliper_strict = nearest_caliper_strict,
+      optimal_max_size = nearest_optimal_max_size,
+      hnsw_k = nearest_hnsw_k,
+      hnsw_M = nearest_hnsw_M,
+      hnsw_ef_construction = nearest_hnsw_ef_construction,
+      hnsw_ef_search = nearest_hnsw_ef_search,
+      mean_tol = mean_tol,
+      sd_tol = sd_tol,
+      ks_tol = ks_tol,
+      perc_tol = perc_tol
     )
     if (!is.null(out_nn)) {
       return(out_nn)
@@ -391,6 +450,10 @@ repsample_search <- function(data,
       outer_mode = mode,
       keep_all = keep_all,
       objective = objective,
+      mean_tol = mean_tol,
+      sd_tol = sd_tol,
+      ks_tol = ks_tol,
+      perc_tol = perc_tol,
       fallback_to_greedy = (method == "auto")
     )
     if (!is.null(out_is)) {
@@ -439,6 +502,7 @@ repsample_search <- function(data,
   mean_norm <- normalize_numlist(mean)
   sd_norm <- normalize_numlist(sd)
   perc_norm <- normalize_numlist(perc)
+  has_tol <- any(!vapply(list(mean_tol, sd_tol, ks_tol, perc_tol), is.null, logical(1)))
 
   eval_seed <- function(seed) {
     args <- c(
@@ -460,23 +524,72 @@ repsample_search <- function(data,
     } else {
       as.numeric(objective(out))
     }
-    list(seed = seed, loss = loss, fit = out)
+    tol <- .fit_tolerance_status(
+      out = out,
+      cont = cont_norm,
+      bincat = bincat_norm,
+      mean = mean_norm,
+      sd = sd_norm,
+      perc = perc_norm,
+      mean_tol = mean_tol,
+      sd_tol = sd_tol,
+      ks_tol = ks_tol,
+      perc_tol = perc_tol
+    )
+    list(
+      seed = seed,
+      loss = loss,
+      fit = out,
+      meets_tolerance = isTRUE(tol$enabled) && isTRUE(tol$ok),
+      tolerance = tol
+    )
   }
 
   results <- NULL
   if (mode == "serial") {
-    results <- lapply(seeds, eval_seed)
+    if (!has_tol) {
+      results <- lapply(seeds, eval_seed)
+    } else {
+      results <- list()
+      for (seed in seeds) {
+        item <- eval_seed(seed)
+        results[[length(results) + 1L]] <- item
+        if (isTRUE(item$meets_tolerance)) {
+          break
+        }
+      }
+    }
   } else if (mode == "multicore") {
     worker_n <- min(n_outer_workers, length(seeds))
-    results <- parallel::mclapply(
-      seeds,
-      eval_seed,
-      mc.cores = worker_n,
-      mc.preschedule = TRUE,
-      mc.set.seed = FALSE,
-      mc.cleanup = FALSE,
-      mc.allow.recursive = FALSE
-    )
+    if (!has_tol) {
+      results <- parallel::mclapply(
+        seeds,
+        eval_seed,
+        mc.cores = worker_n,
+        mc.preschedule = TRUE,
+        mc.set.seed = FALSE,
+        mc.cleanup = FALSE,
+        mc.allow.recursive = FALSE
+      )
+    } else {
+      results <- list()
+      for (start_i in seq.int(1L, length(seeds), by = worker_n)) {
+        idx <- start_i:min(length(seeds), start_i + worker_n - 1L)
+        batch <- parallel::mclapply(
+          seeds[idx],
+          eval_seed,
+          mc.cores = min(worker_n, length(idx)),
+          mc.preschedule = TRUE,
+          mc.set.seed = FALSE,
+          mc.cleanup = FALSE,
+          mc.allow.recursive = FALSE
+        )
+        results <- c(results, batch)
+        if (any(vapply(batch, function(x) isTRUE(x$meets_tolerance), logical(1)))) {
+          break
+        }
+      }
+    }
   } else {
     worker_n <- min(n_outer_workers, length(seeds))
     cl <- parallel::makeCluster(worker_n)
@@ -493,7 +606,19 @@ repsample_search <- function(data,
       ),
       envir = environment()
     )
-    results <- parallel::parLapply(cl, seeds, eval_seed)
+    if (!has_tol) {
+      results <- parallel::parLapply(cl, seeds, eval_seed)
+    } else {
+      results <- list()
+      for (start_i in seq.int(1L, length(seeds), by = worker_n)) {
+        idx <- start_i:min(length(seeds), start_i + worker_n - 1L)
+        batch <- parallel::parLapply(cl, seeds[idx], eval_seed)
+        results <- c(results, batch)
+        if (any(vapply(batch, function(x) isTRUE(x$meets_tolerance), logical(1)))) {
+          break
+        }
+      }
+    }
   }
 
   losses <- vapply(results, function(x) as.numeric(x$loss), numeric(1))
@@ -516,11 +641,16 @@ repsample_search <- function(data,
       summary = summary_df,
       all = if (keep_all) results else NULL,
       meta = list(
-        n_seeds = length(seeds),
+        n_seeds = nrow(summary_df),
         n_outer_workers = n_outer_workers,
         outer_mode = mode,
         backend = backend_choice,
-        theoretical = theoretical
+        theoretical = theoretical,
+        stopped_early_by_tolerance = isTRUE(has_tol) &&
+          any(vapply(results, function(x) isTRUE(x$meets_tolerance), logical(1))),
+        nearest_distance = if (method == "nearest") nearest_distance else NULL,
+        nearest_backend = if (method == "nearest") nearest_backend else NULL,
+        nearest_match = if (method == "nearest") nearest_match else NULL
       )
     ),
     class = "repsample_search_result"
@@ -558,11 +688,40 @@ repsample_search <- function(data,
 #'   `"auto"`, `"serial"`, `"multicore"`, or `"psock"`.
 #' @param method Sampling method:
 #'   `"auto"` (default), `"greedy"`, `"importance"`, or `"nearest"`.
+#' @param nearest_replace Logical flag used when `method = "nearest"`:
+#'   `FALSE` (default) matches without replacement; `TRUE` allows replacement.
+#' @param nearest_distance Distance metric for `method = "nearest"`:
+#'   `"euclidean"` (default), `"mahalanobis"`, or `"weighted"`.
+#' @param nearest_backend Nearest-neighbor search backend:
+#'   `"auto"` (default), `"exact"`, or `"hnsw"` (requires optional
+#'   package `RcppHNSW`).
+#' @param nearest_match Nearest-neighbor assignment mode:
+#'   `"greedy"` (default) or `"optimal"` (global assignment; requires
+#'   optional package `clue`).
+#' @param nearest_feature_weights Optional positive weights for
+#'   `nearest_distance = "weighted"` (length 1 or length `cont`).
+#' @param nearest_caliper Optional positive caliper(s) on standardized
+#'   per-variable absolute distances for `method = "nearest"`.
+#' @param nearest_caliper_strict If `TRUE`, error when no candidate satisfies
+#'   the caliper for a draw; otherwise fallback to nearest candidate.
+#' @param nearest_optimal_max_size Maximum allowed `size` for
+#'   `nearest_match = "optimal"` before automatically falling back to greedy.
+#' @param nearest_hnsw_k Candidate count queried per draw when using HNSW.
+#' @param nearest_hnsw_M HNSW graph degree parameter.
+#' @param nearest_hnsw_ef_construction HNSW build-time search width.
+#' @param nearest_hnsw_ef_search HNSW query-time search width.
 #' @param objective Optional custom objective function passed to
 #'   `repsample_search()`.
 #' @param stop_loss Optional scalar threshold for early exit. If the best
 #'   stage loss is less than or equal to `stop_loss`, the remaining stages
 #'   are skipped.
+#' @param mean_tol Optional tolerance on absolute mean error for early stop.
+#' @param sd_tol Optional tolerance on absolute SD error for early stop.
+#' @param ks_tol Optional tolerance on KS statistic for early stop.
+#' @param perc_tol Optional tolerance on absolute percentage-point error.
+#' @param checkpoint_file Optional path to an RDS checkpoint file. If
+#'   provided, stage state is saved after each completed stage.
+#' @param resume If `TRUE`, resume from `checkpoint_file` when it exists.
 #' @param keep_all If `TRUE`, retain all per-seed fit objects across all stages.
 #' @param ... Additional arguments passed to `repsample()`.
 #'
@@ -589,16 +748,40 @@ repsample_search_auto <- function(data,
                                   n_outer_workers = 1,
                                   outer_parallel = c("auto", "serial", "multicore", "psock"),
                                   method = c("auto", "greedy", "importance", "nearest"),
+                                  nearest_replace = FALSE,
+                                  nearest_distance = c("euclidean", "mahalanobis", "weighted"),
+                                  nearest_backend = c("auto", "exact", "hnsw"),
+                                  nearest_match = c("greedy", "optimal"),
+                                  nearest_feature_weights = NULL,
+                                  nearest_caliper = NULL,
+                                  nearest_caliper_strict = FALSE,
+                                  nearest_optimal_max_size = 2000L,
+                                  nearest_hnsw_k = 64L,
+                                  nearest_hnsw_M = 16L,
+                                  nearest_hnsw_ef_construction = 200L,
+                                  nearest_hnsw_ef_search = 64L,
                                   objective = NULL,
                                   stop_loss = NULL,
+                                  mean_tol = NULL,
+                                  sd_tol = NULL,
+                                  ks_tol = NULL,
+                                  perc_tol = NULL,
+                                  checkpoint_file = NULL,
+                                  resume = FALSE,
                                   keep_all = FALSE,
                                   ...) {
   outer_parallel <- match.arg(outer_parallel)
   method <- match.arg(method)
+  nearest_distance <- match.arg(nearest_distance)
+  nearest_backend <- match.arg(nearest_backend)
+  nearest_match <- match.arg(nearest_match)
   n_stages <- check_positive_int_scalar(n_stages, "n_stages")
   stage_n_seeds <- normalize_stage_seed_counts(n_stages, n_seeds)
   n_outer_workers <- check_positive_int_scalar(n_outer_workers, "n_outer_workers")
   top_k <- check_positive_int_scalar(top_k, "top_k")
+  check_scalar_flag(nearest_replace, "nearest_replace")
+  check_scalar_flag(nearest_caliper_strict, "nearest_caliper_strict")
+  check_scalar_flag(resume, "resume")
 
   if (!is.numeric(seed_start) || length(seed_start) != 1L || is.na(seed_start) ||
       abs(seed_start - round(seed_start)) > 0 || seed_start < 0 || seed_start > .Machine$integer.max) {
@@ -621,11 +804,17 @@ repsample_search_auto <- function(data,
   if (!is.logical(keep_all) || length(keep_all) != 1L || is.na(keep_all)) {
     stop("`keep_all` must be TRUE or FALSE.", call. = FALSE)
   }
+  if (!is.null(checkpoint_file)) {
+    if (!is.character(checkpoint_file) || length(checkpoint_file) != 1L || !nzchar(checkpoint_file)) {
+      stop("`checkpoint_file` must be NULL or a non-empty file path.", call. = FALSE)
+    }
+  }
 
   stage_radius <- normalize_refine_radius(n_stages, stage_n_seeds, refine_radius, radius_shrink)
   stage_results <- vector("list", n_stages)
   seen_seeds <- integer(0)
   all_results <- if (keep_all) list() else NULL
+  start_stage <- 1L
 
   current_seeds <- if (is.null(seeds_stage1)) {
     sanitize_seed_vector(seed_start + seq_len(stage_n_seeds[1L]) - 1L, name = "Generated stage-1 `seeds`")
@@ -650,6 +839,26 @@ repsample_search_auto <- function(data,
     )
   }
 
+  if (!is.null(checkpoint_file) && isTRUE(resume) && file.exists(checkpoint_file)) {
+    checkpoint <- tryCatch(readRDS(checkpoint_file), error = function(e) NULL)
+    if (!is.null(checkpoint) && is.list(checkpoint)) {
+      if (!is.null(checkpoint$stage_results) && length(checkpoint$stage_results) > 0L) {
+        completed_from_checkpoint <- min(length(checkpoint$stage_results), n_stages)
+        stage_results[seq_len(completed_from_checkpoint)] <- checkpoint$stage_results[seq_len(completed_from_checkpoint)]
+        start_stage <- completed_from_checkpoint + 1L
+      }
+      if (!is.null(checkpoint$seen_seeds)) {
+        seen_seeds <- as.integer(unique(checkpoint$seen_seeds))
+      }
+      if (!is.null(checkpoint$current_seeds) && length(checkpoint$current_seeds) > 0L) {
+        current_seeds <- sanitize_seed_vector(checkpoint$current_seeds, name = "checkpoint `current_seeds`")
+      }
+      if (keep_all && !is.null(checkpoint$all_results)) {
+        all_results <- checkpoint$all_results
+      }
+    }
+  }
+
   extra_args <- list(...)
   if ("seednum" %in% names(extra_args)) {
     warning(
@@ -659,17 +868,35 @@ repsample_search_auto <- function(data,
     extra_args$seednum <- NULL
   }
 
+  save_checkpoint <- function(completed_stages, current_seeds, stopped_early, stopped_stage) {
+    if (is.null(checkpoint_file) || completed_stages < 1L) {
+      return(invisible(NULL))
+    }
+    state <- list(
+      stage_results = stage_results[seq_len(completed_stages)],
+      seen_seeds = seen_seeds,
+      current_seeds = current_seeds,
+      all_results = all_results,
+      completed_stages = completed_stages,
+      stopped_early = stopped_early,
+      stopped_stage = stopped_stage
+    )
+    saveRDS(state, checkpoint_file)
+    invisible(NULL)
+  }
+
   backend_choice <- extra_args$backend
   if (is.null(backend_choice)) {
     backend_choice <- "cpu"
   }
   backend_choice <- match.arg(backend_choice, c("cpu", "cuda"))
 
-  completed_stages <- 0L
+  completed_stages <- start_stage - 1L
   stopped_early <- FALSE
   stopped_stage <- NA_integer_
+  stage_indices <- if (start_stage <= n_stages) seq.int(start_stage, n_stages) else integer(0)
 
-  for (stage_idx in seq_len(n_stages)) {
+  for (stage_idx in stage_indices) {
     call_args <- c(
       list(
         data = data,
@@ -683,6 +910,22 @@ repsample_search_auto <- function(data,
         n_outer_workers = n_outer_workers,
         outer_parallel = outer_parallel,
         method = method,
+        nearest_replace = nearest_replace,
+        nearest_distance = nearest_distance,
+        nearest_backend = nearest_backend,
+        nearest_match = nearest_match,
+        nearest_feature_weights = nearest_feature_weights,
+        nearest_caliper = nearest_caliper,
+        nearest_caliper_strict = nearest_caliper_strict,
+        nearest_optimal_max_size = nearest_optimal_max_size,
+        nearest_hnsw_k = nearest_hnsw_k,
+        nearest_hnsw_M = nearest_hnsw_M,
+        nearest_hnsw_ef_construction = nearest_hnsw_ef_construction,
+        nearest_hnsw_ef_search = nearest_hnsw_ef_search,
+        mean_tol = mean_tol,
+        sd_tol = sd_tol,
+        ks_tol = ks_tol,
+        perc_tol = perc_tol,
         objective = objective,
         keep_all = keep_all
       ),
@@ -702,13 +945,22 @@ repsample_search_auto <- function(data,
 
     seen_seeds <- unique(c(seen_seeds, as.integer(stage_out$summary$seed)))
 
+    if (isTRUE(stage_out$meta$stopped_early_by_tolerance)) {
+      stopped_early <- TRUE
+      stopped_stage <- as.integer(stage_idx)
+      save_checkpoint(completed_stages, current_seeds, stopped_early, stopped_stage)
+      break
+    }
+
     if (!is.null(stop_loss) && as.numeric(stage_out$best_loss) <= stop_loss) {
       stopped_early <- TRUE
       stopped_stage <- as.integer(stage_idx)
+      save_checkpoint(completed_stages, current_seeds, stopped_early, stopped_stage)
       break
     }
 
     if (stage_idx >= n_stages) {
+      save_checkpoint(completed_stages, current_seeds, stopped_early, stopped_stage)
       next
     }
 
@@ -725,6 +977,7 @@ repsample_search_auto <- function(data,
       seen_seeds = seen_seeds,
       allow_repeats = allow_repeats
     )
+    save_checkpoint(completed_stages, current_seeds, stopped_early, stopped_stage)
   }
 
   if (completed_stages < 1L) {
@@ -779,9 +1032,15 @@ repsample_search_auto <- function(data,
         stage_n_seeds = stage_n_seeds[seq_len(completed_stages)],
         stage_refine_radius = if (completed_stages > 1L) stage_radius[seq_len(completed_stages - 1L)] else integer(0),
         allow_repeats = allow_repeats,
+        nearest_replace = nearest_replace,
+        nearest_distance = nearest_distance,
+        nearest_backend = nearest_backend,
+        nearest_match = nearest_match,
         stop_loss = stop_loss,
         stopped_early = stopped_early,
-        stopped_stage = stopped_stage
+        stopped_stage = stopped_stage,
+        checkpoint_file = checkpoint_file,
+        resumed = isTRUE(resume)
       )
     ),
     class = "repsample_search_result"

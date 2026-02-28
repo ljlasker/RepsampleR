@@ -23,9 +23,18 @@
 - optional CUDA GPU fast path (`backend = "cuda"`) for supported theoretical continuous targets
 - outer seed-search wrappers: `repsample_search()` and `repsample_search_auto()`
 - simplified front-end: `repsample_easy()`
+- one-command high-level API: `repsample_fit()`
 - optional method dispatch: `method = "auto" | "greedy" | "importance"`
 - nearest-neighbor theoretical matching path with multivariate continuous support:
   `method = "nearest"` with `nearest_replace = FALSE/TRUE`
+- nearest-neighbor metric controls: `nearest_distance = "euclidean" | "mahalanobis" | "weighted"`
+- nearest-neighbor backend controls: `nearest_backend = "auto" | "exact" | "hnsw"` (HNSW requires optional `RcppHNSW`)
+- nearest-neighbor assignment controls: `nearest_match = "greedy" | "optimal"` (optimal requires optional `clue`)
+- nearest calipers and optional strict caliper enforcement
+- tolerance-based early stop (`mean_tol`, `sd_tol`, `ks_tol`, `perc_tol`)
+- adaptive method search (`method = "adaptive"`) with pilot-then-exploit budget allocation
+- staged search checkpoint/resume (`checkpoint_file`, `resume`) in `repsample_search_auto()`
+- diagnostics helpers: `repsample_quality()`, `summary()`, and `plot()`
 
 ## Install from GitHub (public)
 
@@ -81,6 +90,36 @@ out <- repsample_easy(
 )
 ```
 
+## One-Command API (`repsample_fit`)
+
+```r
+library(RepsampleR)
+
+fit <- repsample_fit(
+  data = baseline,
+  size = 1000,
+  cont = c("x1", "x2"),
+  mean = c(1, -0.5),
+  sd = c(1, 0.8),
+  dist = c("normal", "normal"),
+  method = "adaptive",   # auto | adaptive | greedy | importance | nearest
+  mode = "search",
+  control = list(
+    n_seeds = 24,
+    n_outer_workers = 4,
+    nearest_distance = "mahalanobis",
+    nearest_backend = "auto",
+    nearest_match = "greedy",
+    mean_tol = 0.05,
+    sd_tol = 0.05,
+    ks_tol = 0.03
+  )
+)
+
+summary(fit$best)
+plot(fit$best, var = "x1")
+```
+
 ## Outer Search Preset
 
 ```r
@@ -105,6 +144,50 @@ search <- repsample_search(
 
 best_fit <- search$best
 best_fit$meta
+```
+
+## Multi-Stage Search with Resume
+
+```r
+library(RepsampleR)
+
+search <- repsample_search_auto(
+  data = baseline,
+  size = nrow(baseline) %/% 10,
+  cont = "x",
+  mean = 1,
+  sd = 1,
+  n_stages = 3,
+  n_seeds = c(24, 24, 24),
+  checkpoint_file = "repsample_stage_checkpoint.rds",
+  resume = TRUE
+)
+```
+
+## Nearest Advanced Controls
+
+```r
+library(RepsampleR)
+
+fit_nn <- repsample_fit(
+  data = baseline,
+  size = 1000,
+  cont = c("x1", "x2"),
+  mean = c(1, -0.5),
+  sd = c(1, 0.8),
+  method = "nearest",
+  mode = "search",
+  control = list(
+    n_seeds = 12,
+    nearest_replace = FALSE,
+    nearest_distance = "weighted",
+    nearest_feature_weights = c(2, 0.5),
+    nearest_backend = "hnsw",       # auto fallback to exact if unavailable
+    nearest_match = "optimal",      # auto fallback to greedy if `clue` unavailable
+    nearest_caliper = c(3, 3),
+    nearest_caliper_strict = FALSE
+  )
+)
 ```
 
 ## One-Command Multi-Stage Search
@@ -157,11 +240,23 @@ in `out$selected_rows`.
 - `exact = TRUE` is intentionally slower (as in Stata).
 - CUDA mode currently targets theoretical sampling with continuous variables
   and `exact = FALSE`; other models fall back to CPU scoring.
+- By default, `backend = "cuda"` now falls back to CPU automatically when
+  CUDA dependencies are unavailable (`cuda_fallback = TRUE`).
 - CUDA mode requires Python `cupy` and R package `reticulate` on the target machine.
+- Optional HNSW nearest backend requires R package `RcppHNSW`.
+- Optional global optimal nearest assignment requires R package `clue`.
 - On Windows with CuPy 12, install `nvidia-cuda-nvrtc-cu12`,
   `nvidia-cuda-runtime-cu12`, and `nvidia-cublas-cu12` in the same Python
   environment. Python 3.8+ may also require registering CUDA DLL paths via
   `os.add_dll_directory()` when launching from R.
+
+## Benchmark Harness
+
+Run local benchmark comparisons with:
+
+```bash
+Rscript scripts/benchmark_repsample_methods.R --n=10000 --size=1000 --n_seeds=8 --outfile=benchmark.csv
+```
 
 # Citations
 

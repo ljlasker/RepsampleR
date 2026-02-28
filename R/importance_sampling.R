@@ -281,6 +281,11 @@
     backend = "importance_sampling",
     cuda_fastpath = FALSE,
     quality = "importance",
+    cont_vars = prep$cont,
+    bincat_vars = character(0),
+    target_mean = as.numeric(prep$mean),
+    target_sd = as.numeric(prep$sd),
+    target_perc = numeric(0),
     cont_dist = if (length(prep$cont) > 0L) stats::setNames(as.character(prep$dist), prep$cont) else character(0),
     exact = FALSE,
     weighted = FALSE,
@@ -360,6 +365,10 @@
                                       outer_mode = c("auto", "serial", "multicore", "psock"),
                                       keep_all = FALSE,
                                       objective = NULL,
+                                      mean_tol = NULL,
+                                      sd_tol = NULL,
+                                      ks_tol = NULL,
+                                      perc_tol = NULL,
                                       fallback_to_greedy = TRUE,
                                       include_weights = FALSE) {
   outer_mode <- match.arg(outer_mode)
@@ -381,7 +390,7 @@
   }
 
   eval_seed <- function(seed) {
-    .importance_eval_seed(
+    res <- .importance_eval_seed(
       data = data,
       size = size,
       seed = seed,
@@ -389,22 +398,67 @@
       include_weights = include_weights,
       objective = objective
     )
+    tol <- .fit_tolerance_status(
+      out = res$fit,
+      cont = prep$cont,
+      mean = prep$mean,
+      sd = prep$sd,
+      mean_tol = mean_tol,
+      sd_tol = sd_tol,
+      ks_tol = ks_tol,
+      perc_tol = perc_tol
+    )
+    res$meets_tolerance <- isTRUE(tol$enabled) && isTRUE(tol$ok)
+    res$tolerance <- tol
+    res
   }
 
+  has_tol <- any(!vapply(list(mean_tol, sd_tol, ks_tol, perc_tol), is.null, logical(1)))
   results <- NULL
   if (outer_mode == "serial" || length(seeds) == 1L || n_outer_workers <= 1L) {
-    results <- lapply(seeds, eval_seed)
+    if (!has_tol) {
+      results <- lapply(seeds, eval_seed)
+    } else {
+      results <- list()
+      for (seed in seeds) {
+        item <- eval_seed(seed)
+        results[[length(results) + 1L]] <- item
+        if (isTRUE(item$meets_tolerance)) {
+          break
+        }
+      }
+    }
   } else if (outer_mode == "multicore") {
     worker_n <- min(as.integer(n_outer_workers), length(seeds))
-    results <- parallel::mclapply(
-      seeds,
-      eval_seed,
-      mc.cores = worker_n,
-      mc.preschedule = TRUE,
-      mc.set.seed = FALSE,
-      mc.cleanup = FALSE,
-      mc.allow.recursive = FALSE
-    )
+    if (!has_tol) {
+      results <- parallel::mclapply(
+        seeds,
+        eval_seed,
+        mc.cores = worker_n,
+        mc.preschedule = TRUE,
+        mc.set.seed = FALSE,
+        mc.cleanup = FALSE,
+        mc.allow.recursive = FALSE
+      )
+    } else {
+      results <- list()
+      for (start_i in seq.int(1L, length(seeds), by = worker_n)) {
+        idx <- start_i:min(length(seeds), start_i + worker_n - 1L)
+        batch <- parallel::mclapply(
+          seeds[idx],
+          eval_seed,
+          mc.cores = min(worker_n, length(idx)),
+          mc.preschedule = TRUE,
+          mc.set.seed = FALSE,
+          mc.cleanup = FALSE,
+          mc.allow.recursive = FALSE
+        )
+        results <- c(results, batch)
+        if (any(vapply(batch, function(x) isTRUE(x$meets_tolerance), logical(1)))) {
+          break
+        }
+      }
+    }
   } else {
     worker_n <- min(as.integer(n_outer_workers), length(seeds))
     cl <- parallel::makeCluster(worker_n)
@@ -412,7 +466,19 @@
     libs <- .libPaths()
     parallel::clusterCall(cl, function(x) .libPaths(x), libs)
     parallel::clusterExport(cl, varlist = c("eval_seed"), envir = environment())
-    results <- parallel::parLapply(cl, seeds, eval_seed)
+    if (!has_tol) {
+      results <- parallel::parLapply(cl, seeds, eval_seed)
+    } else {
+      results <- list()
+      for (start_i in seq.int(1L, length(seeds), by = worker_n)) {
+        idx <- start_i:min(length(seeds), start_i + worker_n - 1L)
+        batch <- parallel::parLapply(cl, seeds[idx], eval_seed)
+        results <- c(results, batch)
+        if (any(vapply(batch, function(x) isTRUE(x$meets_tolerance), logical(1)))) {
+          break
+        }
+      }
+    }
   }
 
   losses <- vapply(results, function(x) as.numeric(x$loss), numeric(1))
@@ -435,12 +501,14 @@
       summary = summary_df,
       all = if (isTRUE(keep_all)) results else NULL,
       meta = list(
-        n_seeds = length(seeds),
+        n_seeds = nrow(summary_df),
         n_outer_workers = as.integer(n_outer_workers),
         outer_mode = outer_mode,
         backend = "importance_sampling",
         theoretical = TRUE,
-        method = "importance_sampling"
+        method = "importance_sampling",
+        stopped_early_by_tolerance = isTRUE(has_tol) &&
+          any(vapply(results, function(x) isTRUE(x$meets_tolerance), logical(1)))
       )
     ),
     class = "repsample_search_result"

@@ -271,7 +271,14 @@ test_that("backend validates and cuda preflight errors without dependencies", {
   if (!(requireNamespace("reticulate", quietly = TRUE) &&
         reticulate::py_module_available("cupy"))) {
     expect_error(
-      repsample(dat, size = 15, cont = "x", bincat = "b", backend = "cuda"),
+      repsample(
+        dat,
+        size = 15,
+        cont = "x",
+        bincat = "b",
+        backend = "cuda",
+        cuda_fallback = FALSE
+      ),
       "CUDA backend requires"
     )
   }

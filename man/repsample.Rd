@@ -23,7 +23,8 @@ repsample(
   subset = NULL,
   in_rows = NULL,
   n_cores = 1,
-  backend = c("cpu", "cuda")
+  backend = c("cpu", "cuda"),
+  cuda_fallback = TRUE
 )
 }
 \arguments{
@@ -80,6 +81,9 @@ RStudio on macOS).}
 \code{"cuda"} enables an additional CUDA fast-path for theoretical sampling
 with continuous variables and \code{exact = FALSE} (uses Python \code{cupy}
 through \code{reticulate}).}
+
+\item{cuda_fallback}{If \code{TRUE} (default), automatically falls back to CPU
+when CUDA dependencies are unavailable or a CUDA fast-path cannot be used.}
 }
 \value{
 An object of class \code{repsample_result} with:

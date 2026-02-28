@@ -41,6 +41,7 @@ test_that("repsample_easy single mode supports nearest-neighbor multi-variable m
   expect_equal(sum(out$data$repsample), 120)
   expect_equal(out$meta$method, "nearest_neighbor")
   expect_equal(out$meta$backend, "nearest_neighbor")
+  expect_false(isTRUE(out$meta$nearest_replace))
 })
 
 test_that("nearest-neighbor single mode is reproducible for fixed seed", {
@@ -77,6 +78,59 @@ test_that("nearest-neighbor single mode is reproducible for fixed seed", {
   expect_equal(out1$selected_rows, out2$selected_rows)
 })
 
+test_that("nearest-neighbor supports replacement in single mode", {
+  set.seed(405)
+  dat <- data.frame(
+    x = rnorm(30, 0, 1),
+    y = rnorm(30, 0, 1)
+  )
+
+  out <- repsample_easy(
+    data = dat,
+    size = 45,
+    cont = c("x", "y"),
+    mean = c(1, -0.5),
+    sd = c(1, 0.8),
+    dist = c("normal", "normal"),
+    mode = "single",
+    method = "nearest",
+    nearest_replace = TRUE,
+    seed = 11
+  )
+
+  expect_s3_class(out, "repsample_result")
+  expect_true(isTRUE(out$meta$nearest_replace))
+  expect_equal(length(out$selected_rows), 45)
+  expect_true("repsample_n" %in% names(out$data))
+  expect_equal(sum(out$data$repsample_n), 45)
+  expect_true(any(out$data$repsample_n > 1L))
+  expect_equal(sum(out$data$repsample), length(unique(out$selected_rows)))
+})
+
+test_that("nearest-neighbor without replacement rejects size larger than pool", {
+  set.seed(406)
+  dat <- data.frame(
+    x = rnorm(25, 0, 1),
+    y = rnorm(25, 0, 1)
+  )
+
+  expect_error(
+    repsample_easy(
+      data = dat,
+      size = 30,
+      cont = c("x", "y"),
+      mean = c(1, -0.5),
+      sd = c(1, 0.8),
+      dist = c("normal", "normal"),
+      mode = "single",
+      method = "nearest",
+      nearest_replace = FALSE,
+      seed = 12
+    ),
+    "Not enough complete cases|cannot exceed available rows"
+  )
+})
+
 test_that("repsample_search supports nearest-neighbor mode", {
   set.seed(403)
   dat <- data.frame(
@@ -101,7 +155,37 @@ test_that("repsample_search supports nearest-neighbor mode", {
   expect_equal(nrow(out$summary), 4)
   expect_equal(out$meta$method, "nearest_neighbor")
   expect_equal(out$meta$backend, "nearest_neighbor")
+  expect_false(isTRUE(out$meta$nearest_replace))
   expect_equal(sum(out$best$data$repsample), 100)
+})
+
+test_that("repsample_search supports nearest-neighbor mode with replacement", {
+  set.seed(407)
+  dat <- data.frame(
+    x = rnorm(60, 0, 1),
+    y = rnorm(60, 0, 1)
+  )
+
+  out <- repsample_search(
+    data = dat,
+    size = 80,
+    cont = c("x", "y"),
+    mean = c(1, -0.5),
+    sd = c(1, 0.8),
+    dist = c("normal", "normal"),
+    method = "nearest",
+    nearest_replace = TRUE,
+    n_seeds = 3,
+    seed_start = 300,
+    n_outer_workers = 1
+  )
+
+  expect_s3_class(out, "repsample_search_result")
+  expect_equal(nrow(out$summary), 3)
+  expect_true(isTRUE(out$meta$nearest_replace))
+  expect_true(isTRUE(out$best$meta$nearest_replace))
+  expect_true("repsample_n" %in% names(out$best$data))
+  expect_equal(sum(out$best$data$repsample_n), 80)
 })
 
 test_that("forced nearest mode errors when requirements are not met", {
