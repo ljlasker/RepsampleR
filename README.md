@@ -258,6 +258,14 @@ Run local benchmark comparisons with:
 Rscript scripts/benchmark_repsample_methods.R --n=10000 --size=1000 --n_seeds=8 --outfile=benchmark.csv
 ```
 
+## CI and Commit Checks
+
+This repository now includes GitHub Actions checks:
+- `R-CMD-check`: cross-platform package checks (Ubuntu, macOS, Windows, plus R-devel on Ubuntu).
+- `lint`: static linting with `lintr`.
+- `coverage`: test coverage report (Cobertura + Codecov upload).
+- `benchmark-smoke`: small benchmark run on pull requests.
+
 # Citations
 
 Kontopantelis, E. (2013). A Greedy Algorithm for Representative Sampling: repsample in Stata. *Journal of Statistical Software*, Code Snippets, 55(1), 1–19. https://doi.org/10.18637/jss.v055.c01
